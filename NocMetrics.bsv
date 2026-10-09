@@ -40,9 +40,11 @@ function Action reportBandwidth(String name, MetricCount packets,
          MetricCount whole = bytes / duration;
          MetricCount fraction = ((bytes % duration) * 1000) / duration;
          // Bluesim does not zero-pad %03d like printf. Print each digit.
-         $display("METRIC %s packets=%0d payload_bytes=%0d cycles=%0d bytes_per_cycle=%0d.%0d%0d%0d",
-                  name, packets, bytes, cycles, whole,
+         $display("--- %s = %0d.%0d%0d%0d bytes/cycle ---",
+                  name, whole,
                   fraction / 100, (fraction / 10) % 10, fraction % 10);
+         $display("    %0d packets | %0d payload bytes | %0d cycles",
+                  packets, bytes, cycles);
       end
    endaction;
 endfunction
@@ -72,8 +74,9 @@ module mkLatencyMetric#(String name)(Ifc_latency_metric);
       end
       if (!finished && haveStart && isValid(getEvent)) begin
          MetricCycle endCycle = fromMaybe(0, getEvent);
-         $display("METRIC %s injected_cycle=%0d collected_cycle=%0d cycles=%0d",
-                  name, startCycle, endCycle, endCycle - startCycle);
+         $display("--- %s = %0d cycles ---", name, endCycle - startCycle);
+         $display("    Injected: cycle %0d | Collected: cycle %0d",
+                  startCycle, endCycle);
          finished <= True;
       end
    endrule

@@ -143,6 +143,22 @@ def main():
                 if match:
                     name, fields = match.groups()
                     found[name] = dict(re.findall(r"(\w+)=([^\s]+)", fields))
+            for match in re.finditer(
+                r"^--- (\w+) = (\d+) cycles ---\n"
+                r"[ \t]*Injected: cycle (\d+) \| Collected: cycle (\d+)$",
+                output, re.MULTILINE,
+            ):
+                name, cycles, injected, collected = match.groups()
+                found[name] = {"cycles": cycles, "injected_cycle": injected,
+                               "collected_cycle": collected}
+            for match in re.finditer(
+                r"^--- (\w+) = (\d+\.\d+) bytes/cycle ---\n"
+                r"[ \t]*(\d+) packets \| (\d+) payload bytes \| (\d+) cycles$",
+                output, re.MULTILINE,
+            ):
+                name, rate, packets, payload_bytes, cycles = match.groups()
+                found[name] = {"bytes_per_cycle": rate, "packets": packets,
+                               "payload_bytes": payload_bytes, "cycles": cycles}
             for name in expected:
                 if name not in found:
                     raise CheckFailed(benchmark + " passed without the " + name + " measurement")

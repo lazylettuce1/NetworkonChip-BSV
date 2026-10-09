@@ -66,6 +66,15 @@ exact counts. `B_R` and `B_N` count only the half-open cycle interval
 `[warmup, warmup + window)`, then stop starting traffic and verify drainage;
 warm-up and drain cycles are excluded from their denominators.
 
+The summary and counting details print separately, for example:
+
+```text
+--- L0 = 14 cycles ---
+    Injected: cycle 3 | Collected: cycle 17
+--- B_S = 32.000 bytes/cycle ---
+    8 packets | 256 payload bytes | 8 cycles
+```
+
 Repeat runs with longer windows and additional seeds before calling a rate
 steady state. Keep the same workloads/window settings when comparing designs.
 Do not treat a timed-out workload as a valid bandwidth result.
@@ -77,11 +86,8 @@ pass `--clock-period-ns PERIOD`. The CSV adds `latency_ns` and
 `bytes_per_second`; without that argument it reports cycle-based quantities
 only. No clock frequency or synthesis area is guessed by the testbenches.
 
-## Baseline compatibility
+## Compiler options
 
-A clean run of the current depth-four router with local BSC 2025.07 and no
-`-aggressive-conditions` stalls in the original first single-packet test.
-The metric instrumentation does not repair that implementation issue. An
-explicit flag run can characterize the current design, but passing default
-submission commands remains a separate requirement before reporting a
-configuration as valid.
+Extra options supplied with `--bsc-flag` are recorded in the manifest. A
+configuration must also compile with the assignment's default commands
+before it is reported as a valid submission configuration.

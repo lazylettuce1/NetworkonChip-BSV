@@ -181,17 +181,16 @@ module mkTbNocBasic (Empty);
    endrule
 
    // ------------------------------------------------------------- tests --
+   // Gate the whole FSM send action, exposing phase exclusivity to BSC.
    function Action send (NodeAddr src, NodeAddr dst, Bit#(SeqWidth) seq_num, Bool is_last) =
-      action
-         if (!streamEnabled) begin
-            NocPacket p = NocPacket { src: src, dst: dst, is_last: is_last,
-                                      seq_num: seq_num, payload: makePayload(serial) };
-            toSend.enq(p);
-            expected.enq(p);
-            serial <= serial + 1;
-            nSent  <= nSent + 1;
-         end
-      endaction;
+      when (!streamEnabled, action
+         NocPacket p = NocPacket { src: src, dst: dst, is_last: is_last,
+                                   seq_num: seq_num, payload: makePayload(serial) };
+         toSend.enq(p);
+         expected.enq(p);
+         serial <= serial + 1;
+         nSent  <= nSent + 1;
+      endaction);
 
    // Wait until every packet sent has come out, then make sure nothing else does.
    Stmt drain = seq
