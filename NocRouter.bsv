@@ -37,32 +37,9 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
    Vector#(5, FIFOF#(NocPacket)) outQ <- replicateM(mkFIFOF);
    // wires for connecting rules
    Wire#(Direction) pkt_dir <- mkWire();
+   Wire#(Direction) route_dir <- mkWire();
    Reg#(Direction) nextState <- mkReg(North);
 
-   // function Direction priorityArbiter();
-   //    Direction dir = Local;
-   //    if      (inQ[pack(North)].notEmpty()) dir = North;
-   //    else if (inQ[pack(West)].notEmpty())  dir = West;
-   //    else if (inQ[pack(East)].notEmpty())  dir = East;
-   //    else if (inQ[pack(South)].notEmpty()) dir = South;
-   //    else if (inQ[pack(Local)].notEmpty()) dir = Local;
-
-   //    return dir;
-   // endfunction
-
-   // // which side to choose?
-   // // only care about incoming data -> "get"
-   // rule rl_arbiter( inQ[pack(North)].notEmpty() ||
-   //                  inQ[pack(West)].notEmpty()  ||
-   //                  inQ[pack(East)].notEmpty()  ||
-   //                  inQ[pack(South)].notEmpty() ||
-   //                  inQ[pack(Local)].notEmpty());
-   //    // arbiter sets the direction from which "get" needs to happen
-   //    pkt_dir <= priorityArbiter();
-   // endrule : rl_arbiter
-
-   // which side to choose?
-   // only care about incoming data -> "get"
    rule rl_arbiter;
       // arbiter sets the direction from which "get" needs to happen
       // "current" direction is current state.
@@ -106,13 +83,7 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
       // get the next packet from the arbiter   
       let pkt = inQ[pack(pkt_dir)].first();
       let pkt_dst = pkt.dst;
-      let route_dir = routeDirection(pkt_dst);
-      if (outQ[pack(route_dir)].notFull()) begin
-         outQ[pack(route_dir)].enq(pkt);
-         inQ[pack(pkt_dir)].deq();
-         // update nextState for round-robin arbitration
-         nextState <= pkt_dir == Local ? North : unpack(pack(pkt_dir)+1);
-      end
+      route_dir <= routeDirection(pkt_dst);
    endrule : rl_router
 
 
@@ -123,17 +94,15 @@ for (Integer i = 0; i < 5; i = i + 1) begin
          Direction outputDir = unpack(fromInteger(o));
          rule rl_transfer (
             pkt_dir == inputDir &&
-            routeDirection(inQ[i].first().dst) == outputDir &&
+            route_dir == outputDir &&
             inQ[i].notEmpty() &&
             outQ[o].notFull()
          );
             let pkt = inQ[i].first();
             outQ[o].enq(pkt);
             inQ[i].deq();
-
-            nextState <= inputDir == Local
-                        ? North
-                        : unpack(pack(inputDir) + 1);
+            // update nextState for round-robin arbitration
+            nextState <= pkt_dir == Local ? North : unpack(pack(pkt_dir)+1);
          endrule
       end
    end
