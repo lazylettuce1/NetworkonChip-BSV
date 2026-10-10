@@ -34,13 +34,14 @@ endinterface
 (* synthesize *)
 module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
    // 5 in and out FIFOs
-   Vector#(5, FIFOF#(NocPacket)) inQ  <- replicateM(mkSizedFIFOF(2));
-   Vector#(5, FIFOF#(NocPacket)) outQ <- replicateM(mkSizedFIFOF(2));
+   Vector#(5, FIFOF#(NocPacket)) inQ  <- replicateM(mkSizedFIFOF(8));
+   Vector#(5, FIFOF#(NocPacket)) outQ <- replicateM(mkSizedFIFOF(8));
    // wires for connecting rules
    // can my input pkt ACTUALLY be routed?
-   Vector#(5, Wire#(Bool)) canRoute <- replicateM(mkDWire(False));
-   Wire#(Direction) pkt_dir <- mkWire();
-   Reg#(Direction) nextState <- mkReg(North);
+   Vector#(5, Wire#(Direction)) routeWhere <- replicateM(mkDWire(Local));
+   // which input is being routed?
+   Vector#(5, Wire#(Direction)) pkt_dir <- replicateM(mkDWire(Local));
+   Vector#(5, Reg#(Direction)) nextState <- replicateM(mkReg(North));
 
    function Direction routeDirection(NodeAddr dst);
       if (dst.x > myAddr.x) begin
@@ -59,33 +60,33 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
          return Local;
       end
    endfunction
+   
    // arbiter sets the direction from which "get" needs to happen
    // "current" direction is current state.
-   rule rl_arbiter;
-      Direction selectedDir = nextState;
-      Direction checkDir = nextState;
-      Bool found = False;
-      for (Integer i = 0; i < 5; i = i + 1) begin
-         Bit#(4) ix = zeroExtend(pack(nextState))+fromInteger(i);
-         // wrap around logic
-         if (ix >= 4'd5) begin
-            ix = ix - 4'd5;
-         end
-         checkDir = unpack(truncate(ix));
-         if (inQ[pack(checkDir)].notEmpty() && !found) begin
-            // if all outs are full, then just pick the last checked direction.
-            selectedDir = checkDir;
-            // now the peek rule, helps us check if the inFIFO's
-            // first pkt can be routed to it's outFIFO.
-            if (canRoute[pack(checkDir)]) begin
-               found = True;
+   for (Integer o = 0; o < 5; o = o + 1) begin
+      Direction outputDir = unpack(fromInteger(o));
+      rule rl_arbiter(outQ[o].notFull());
+         Direction selectedDir = nextState[o];
+         Direction checkDir = nextState[o];
+         // did you find a non empty inFIFO?
+         Bool found = False;
+         for (Integer i = 0; i < 5; i = i + 1) begin
+            Bit#(4) ix = zeroExtend(pack(nextState[o]))+fromInteger(i);
+            // wrap around logic
+            if (ix >= 4'd5) ix = ix - 4'd5;
+            checkDir = unpack(truncate(ix));
+            if (inQ[pack(checkDir)].notEmpty() && (routeWhere[pack(checkDir)] == outputDir) && !found) begin
+               // if all outs are full, then just pick the last checked direction.
                selectedDir = checkDir;
+               found = True;
             end
          end
-      end
-      pkt_dir <= selectedDir;
-      // state update only happens after deq
-   endrule : rl_arbiter
+         pkt_dir[o] <= selectedDir;
+         // state update only happens after deq
+      endrule : rl_arbiter
+
+
+   end
    // you want to peek at every inFIFO
    for (Integer i = 0; i < 5; i = i + 1) begin
       rule rl_peek;
@@ -94,7 +95,8 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
          // you can do a check without first, 
          // issue is, for first, you need diff rules,
          // but u can check routeDir without first.
-         canRoute[i] <= outQ[pack(route_dir)].notFull();
+         routeWhere[i] <= route_dir;
+         // not checking if it can ACTUALLY be routed, just where it should go.
       endrule
    end
 
@@ -102,19 +104,20 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
    for (Integer i = 0; i < 5; i = i + 1) begin
       Direction inputDir = unpack(fromInteger(i));
       for (Integer o = 0; o < 5; o = o + 1) begin
-         if (i != o) begin 
+         // if in is through Y, out also must be along Y/Local
+         if (i != o && ( (i == 0 && (o == 3 || o == 4)) ||
+                           ( i == 3 && (o == 0 || o == 4)) ||
+                           (i != 0 && i != 3 ))) begin 
             Direction outputDir = unpack(fromInteger(o));
             rule rl_transfer (
-               pkt_dir == inputDir &&
-               routeDirection(inQ[i].first().dst) == outputDir &&
-               inQ[i].notEmpty() &&
-               outQ[o].notFull()
+               pkt_dir[o] == inputDir && routeWhere[i] == outputDir &&
+               inQ[i].notEmpty() && outQ[o].notFull()
             );
                let pkt = inQ[i].first();
                outQ[o].enq(pkt);
                inQ[i].deq();
                // update nextState for round-robin arbitration
-               nextState <= pkt_dir == Local ? North : unpack(pack(pkt_dir)+1);
+               nextState[o] <= pkt_dir[o] == Local ? North : unpack(pack(pkt_dir[o])+1);
             endrule
          end
       end
