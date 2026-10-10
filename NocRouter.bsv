@@ -2,6 +2,7 @@ package NocRouter;
 
 import NocTypes  :: *;
 import FIFOF :: *;
+import SpecialFIFOs :: *;
 import Vector :: *;
 
 typedef enum {North, West, East, South, Local} Direction deriving (Bits, Eq);
@@ -31,17 +32,39 @@ interface Ifc_noc_router;
    interface Ifc_noc_port westPort;
 endinterface
 
+// Select the lowest numbered requesting input. Zero means no grant.
+function Bit#(5) priorityEncode(Bit#(5) requests);
+   Bit#(5) grant = 0;
+   Bool found = False;
+   for (Integer i = 0; i < 5; i = i + 1) begin
+      if (requests[i] == 1 && !found) begin
+         grant[i] = 1;
+         found = True;
+      end
+   end
+   return grant;
+endfunction
+
 (* synthesize *)
 module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
-   // 5 in and out FIFOs
-   Vector#(5, FIFOF#(NocPacket)) inQ  <- replicateM(mkSizedFIFOF(8));
-   Vector#(5, FIFOF#(NocPacket)) outQ <- replicateM(mkSizedFIFOF(8));
+   // Registered inputs break the combinational path between router hops.
+   Vector#(5, FIFOF#(NocPacket)) inQ <- replicateM(mkSizedFIFOF(2));
+   // Empty bypass outputs can enqueue and be collected in the same cycle.
+`ifdef NOC_BUFFERED_OUTPUTS
+   Vector#(5, FIFOF#(NocPacket)) outQ <- replicateM(mkSizedFIFOF(2));
+`elsif NOC_BYPASS_DEPTH2
+   Vector#(5, FIFOF#(NocPacket)) outQ <- replicateM(mkSizedBypassFIFOF(2));
+`else
+   // Best measured bandwidth/area: depth-1 bypass outputs (default).
+   Vector#(5, FIFOF#(NocPacket)) outQ <- replicateM(mkBypassFIFOF);
+`endif
    // wires for connecting rules
    // can my input pkt ACTUALLY be routed?
    Vector#(5, Wire#(Direction)) routeWhere <- replicateM(mkDWire(Local));
-   // which input is being routed?
-   Vector#(5, Wire#(Direction)) pkt_dir <- replicateM(mkDWire(Local));
-   Vector#(5, Reg#(Direction)) nextState <- replicateM(mkReg(North));
+   // One grant bit per input, for each output. Zero means no transfer.
+   Vector#(5, Wire#(Bit#(5))) grants <- replicateM(mkDWire(0));
+   // Inputs after the previous winner get priority; zero wraps to North.
+   Vector#(5, Reg#(Bit#(5))) priorityMask <- replicateM(mkReg(0));
 
    function Direction routeDirection(NodeAddr dst);
       if (dst.x > myAddr.x) begin
@@ -61,28 +84,24 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
       end
    endfunction
    
-   // arbiter sets the direction from which "get" needs to happen
-   // "current" direction is current state.
+   // Each output independently grants one input using masked round robin.
    for (Integer o = 0; o < 5; o = o + 1) begin
       Direction outputDir = unpack(fromInteger(o));
       rule rl_arbiter(outQ[o].notFull());
-         Direction selectedDir = nextState[o];
-         Direction checkDir = nextState[o];
-         // did you find a non empty inFIFO?
-         Bool found = False;
+         Bit#(5) requests = 0;
          for (Integer i = 0; i < 5; i = i + 1) begin
-            Bit#(4) ix = zeroExtend(pack(nextState[o]))+fromInteger(i);
-            // wrap around logic
-            if (ix >= 4'd5) ix = ix - 4'd5;
-            checkDir = unpack(truncate(ix));
-            if (inQ[pack(checkDir)].notEmpty() && (routeWhere[pack(checkDir)] == outputDir) && !found) begin
-               // if all outs are full, then just pick the last checked direction.
-               selectedDir = checkDir;
-               found = True;
+            // Request only connections present in the XY transfer rules.
+            if (i != o && ( (i == 0 && (o == 3 || o == 4)) ||
+                           ( i == 3 && (o == 0 || o == 4)) ||
+                           (i != 0 && i != 3 ))) begin
+               requests[i] = pack(inQ[i].notEmpty() &&
+                                  routeWhere[i] == outputDir);
             end
          end
-         pkt_dir[o] <= selectedDir;
-         // state update only happens after deq
+         Bit#(5) maskedRequests = requests & priorityMask[o];
+         let preferredGrant = priorityEncode(maskedRequests);
+         let fallbackGrant = priorityEncode(requests);
+         grants[o] <= maskedRequests != 0 ? preferredGrant : fallbackGrant;
       endrule : rl_arbiter
 
 
@@ -102,7 +121,7 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
 
 
    for (Integer i = 0; i < 5; i = i + 1) begin
-      Direction inputDir = unpack(fromInteger(i));
+      Bit#(5) inputGrant = 5'b00001 << i;
       for (Integer o = 0; o < 5; o = o + 1) begin
          // if in is through Y, out also must be along Y/Local
          if (i != o && ( (i == 0 && (o == 3 || o == 4)) ||
@@ -110,14 +129,19 @@ module mkNocRouter #(parameter NodeAddr myAddr) (Ifc_noc_router);
                            (i != 0 && i != 3 ))) begin 
             Direction outputDir = unpack(fromInteger(o));
             rule rl_transfer (
-               pkt_dir[o] == inputDir && routeWhere[i] == outputDir &&
+               // Whole-grant equality makes the winners mutually exclusive.
+               grants[o] == inputGrant && routeWhere[i] == outputDir &&
                inQ[i].notEmpty() && outQ[o].notFull()
             );
                let pkt = inQ[i].first();
                outQ[o].enq(pkt);
                inQ[i].deq();
-               // update nextState for round-robin arbitration
-               nextState[o] <= pkt_dir[o] == Local ? North : unpack(pack(pkt_dir[o])+1);
+               // This mask is constant for input i. Advance only on transfer.
+               Bit#(5) nextMask = 5'b11111;
+               for (Integer j = 0; j <= i; j = j + 1) begin
+                  nextMask[j] = 0;
+               end
+               priorityMask[o] <= nextMask;
             endrule
          end
       end
